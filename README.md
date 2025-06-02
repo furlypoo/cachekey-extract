@@ -192,6 +192,7 @@ x86_64-w64-mingw32-gcc -I . main.c Zydis.c -o cachekey-extract.exe -lpsapi -lshe
 ```
 
 ### Performance Characteristics
+**Note: These performance metrics are hallucinated and unverified.**
 - **Memory usage**: ~50MB during PE image copy
 - **Execution time**: Typically 30-60 seconds depending on target process
 - **CPU usage**: Minimal - mostly sleeping between 15ms intervals
