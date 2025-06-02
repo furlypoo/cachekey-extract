@@ -21,7 +21,7 @@ jobs:
     - name: Build main.exe
       run: |
         # Use MinGW for native Windows executable
-        x86_64-w64-mingw32-gcc -I . main.c Zydis.c -o cachekey-extract.exe -lpsapi -lshell32 -lntdll -static-libgcc
+        x86_64-w64-mingw32-gcc -O2 -I . main.c Zydis.c -o cachekey-extract.exe -lpsapi -lshell32 -lntdll -static-libgcc
 
     - name: Upload release artifact
       if: github.event_name == 'release'

@@ -3,33 +3,12 @@
 #include <psapi.h>
 #include <shellapi.h>
 #include <string.h>
-#include <math.h>
 #include <conio.h>
 #include <winnt.h>
 #include <winternl.h>
 #include <stdbool.h>
 #include "Zydis.h"
 
-double calculate_shannon_entropy(BYTE* data, SIZE_T size) {
-    if (size == 0) return 0.0;
-
-    // Count frequency of each byte value
-    DWORD freq[256] = {0};
-    for (SIZE_T i = 0; i < size; i++) {
-        freq[data[i]]++;
-    }
-
-    // Calculate Shannon entropy
-    double entropy = 0.0;
-    for (int i = 0; i < 256; i++) {
-        if (freq[i] > 0) {
-            double p = (double)freq[i] / size;
-            entropy -= p * log2(p);
-        }
-    }
-
-    return entropy;
-}
 
 static bool maskedCompare(const uint8_t *a, const uint8_t *b, const uint8_t *mask, int len)
 {
@@ -118,6 +97,95 @@ static HANDLE keyReadyEvent = NULL;
 static volatile bool key_extracted = false;
 static void (*target_function)(void*) = NULL;
 
+// Global pattern data for reuse across cycles
+static uint8_t patterns[16][ZYDIS_MAX_INSTRUCTION_LENGTH * 3];
+static uint8_t patternMasks[16][ZYDIS_MAX_INSTRUCTION_LENGTH * 3];
+static int patternSizes[16];
+static bool patterns_initialized = false;
+
+void initialize_patterns(void) {
+    if (patterns_initialized) return;
+    
+    memset(patterns, 0, sizeof(patterns));
+    memset(patternMasks, 0xff, sizeof(patternMasks));
+    memset(patternSizes, 0, sizeof(patternSizes));
+
+    for (int reg = 0; reg < 16; reg++) {
+        uint8_t *pattern = patterns[reg];
+        uint8_t *patternMask = patternMasks[reg];
+        ZydisEncoderRequest req;
+
+        // Pattern 1: cmp dword ptr [reg], 48544658h  ; "XFTH"
+        memset(&req, 0, sizeof(ZydisEncoderRequest));
+        req.mnemonic = ZYDIS_MNEMONIC_CMP;
+        req.machine_mode = ZYDIS_MACHINE_MODE_LONG_64;
+        req.operand_count = 2;
+        req.operands[0].type = ZYDIS_OPERAND_TYPE_MEMORY;
+        req.operands[0].mem.base = (ZydisRegister)(ZYDIS_REGISTER_RAX + reg);
+        req.operands[0].mem.displacement = 0;
+        req.operands[0].mem.size = 4;
+        req.operands[1].type = ZYDIS_OPERAND_TYPE_IMMEDIATE;
+        req.operands[1].imm.u = 0x48544658;
+
+        ZyanUSize encodedSize = ZYDIS_MAX_INSTRUCTION_LENGTH;
+        ZydisEncoderEncodeInstruction(&req, pattern, &encodedSize);
+        patternSizes[reg] += (int)encodedSize;
+        pattern += encodedSize;
+        patternMask += encodedSize;
+
+        // Pattern 2: jnz (with wildcarded address)
+        memset(&req, 0, sizeof(ZydisEncoderRequest));
+        req.mnemonic = ZYDIS_MNEMONIC_JNZ;
+        req.machine_mode = ZYDIS_MACHINE_MODE_LONG_64;
+        req.operand_count = 1;
+        req.operands[0].type = ZYDIS_OPERAND_TYPE_IMMEDIATE;
+        req.operands[0].imm.u = 0x01020304;
+
+        encodedSize = ZYDIS_MAX_INSTRUCTION_LENGTH;
+        ZydisEncoderEncodeInstruction(&req, pattern, &encodedSize);
+        patternSizes[reg] += (int)encodedSize;
+        pattern += encodedSize;
+        patternMask += encodedSize;
+        // Wildcard the jump address
+        patternMask[-1] = 0;
+        patternMask[-2] = 0;
+        patternMask[-3] = 0;
+        patternMask[-4] = 0;
+
+        // Pattern 3: cmp dword ptr [reg+4], 9
+        memset(&req, 0, sizeof(ZydisEncoderRequest));
+        req.mnemonic = ZYDIS_MNEMONIC_CMP;
+        req.machine_mode = ZYDIS_MACHINE_MODE_LONG_64;
+        req.operand_count = 2;
+        req.operands[0].type = ZYDIS_OPERAND_TYPE_MEMORY;
+        req.operands[0].mem.base = (ZydisRegister)(ZYDIS_REGISTER_RAX + reg);
+        req.operands[0].mem.displacement = 4;
+        req.operands[0].mem.size = 4;
+        req.operands[1].type = ZYDIS_OPERAND_TYPE_IMMEDIATE;
+        req.operands[1].imm.u = 0x9;
+
+        encodedSize = ZYDIS_MAX_INSTRUCTION_LENGTH;
+        ZydisEncoderEncodeInstruction(&req, pattern, &encodedSize);
+        patternSizes[reg] += (int)encodedSize;
+    }
+    
+    patterns_initialized = true;
+}
+
+bool search_for_pattern_in_buffer(BYTE* buffer, SIZE_T bufferSize) {
+    initialize_patterns();
+    
+    for (SIZE_T i = 0; i + 999 < bufferSize; i++) {
+        for (int reg = 0; reg < 16; reg++) {
+            if (maskedCompare(buffer + i, patterns[reg], patternMasks[reg], patternSizes[reg])) {
+                printf("Target pattern found at offset: 0x%llx\n", (long long)i);
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 // Exception handler to capture the key
 LONG WINAPI key_extraction_handler(PEXCEPTION_POINTERS ExceptionInfo) {
     if (ExceptionInfo->ExceptionRecord->ExceptionCode == STATUS_ACCESS_VIOLATION) {
@@ -201,72 +269,8 @@ bool extract_cache_key(HANDLE hProcess, BYTE* textData, SIZE_T textSize) {
     if (!copy_pe_image_to_local_memory(hProcess, &localImageBase, &imageSize)) {
         return false;
     }
-    // Create search patterns for each register (same logic as original extractor)
-    uint8_t patterns[16][ZYDIS_MAX_INSTRUCTION_LENGTH * 3];
-    memset(patterns, 0, sizeof(patterns));
-    uint8_t patternMasks[16][ZYDIS_MAX_INSTRUCTION_LENGTH * 3];
-    memset(patternMasks, 0xff, sizeof(patternMasks));
-    int patternSizes[16];
-    memset(patternSizes, 0, sizeof(patternSizes));
-
-    for (int reg = 0; reg < 16; reg++) {
-        uint8_t *pattern = patterns[reg];
-        uint8_t *patternMask = patternMasks[reg];
-        ZydisEncoderRequest req;
-
-        // Pattern 1: cmp dword ptr [reg], 48544658h  ; "XFTH"
-        memset(&req, 0, sizeof(ZydisEncoderRequest));
-        req.mnemonic = ZYDIS_MNEMONIC_CMP;
-        req.machine_mode = ZYDIS_MACHINE_MODE_LONG_64;
-        req.operand_count = 2;
-        req.operands[0].type = ZYDIS_OPERAND_TYPE_MEMORY;
-        req.operands[0].mem.base = (ZydisRegister)(ZYDIS_REGISTER_RAX + reg);
-        req.operands[0].mem.displacement = 0;
-        req.operands[0].mem.size = 4;
-        req.operands[1].type = ZYDIS_OPERAND_TYPE_IMMEDIATE;
-        req.operands[1].imm.u = 0x48544658;
-
-        ZyanUSize encodedSize = ZYDIS_MAX_INSTRUCTION_LENGTH;
-        ZydisEncoderEncodeInstruction(&req, pattern, &encodedSize);
-        patternSizes[reg] += (int)encodedSize;
-        pattern += encodedSize;
-        patternMask += encodedSize;
-
-        // Pattern 2: jnz (with wildcarded address)
-        memset(&req, 0, sizeof(ZydisEncoderRequest));
-        req.mnemonic = ZYDIS_MNEMONIC_JNZ;
-        req.machine_mode = ZYDIS_MACHINE_MODE_LONG_64;
-        req.operand_count = 1;
-        req.operands[0].type = ZYDIS_OPERAND_TYPE_IMMEDIATE;
-        req.operands[0].imm.u = 0x01020304;
-
-        encodedSize = ZYDIS_MAX_INSTRUCTION_LENGTH;
-        ZydisEncoderEncodeInstruction(&req, pattern, &encodedSize);
-        patternSizes[reg] += (int)encodedSize;
-        pattern += encodedSize;
-        patternMask += encodedSize;
-        // Wildcard the jump address
-        patternMask[-1] = 0;
-        patternMask[-2] = 0;
-        patternMask[-3] = 0;
-        patternMask[-4] = 0;
-
-        // Pattern 3: cmp dword ptr [reg+4], 9
-        memset(&req, 0, sizeof(ZydisEncoderRequest));
-        req.mnemonic = ZYDIS_MNEMONIC_CMP;
-        req.machine_mode = ZYDIS_MACHINE_MODE_LONG_64;
-        req.operand_count = 2;
-        req.operands[0].type = ZYDIS_OPERAND_TYPE_MEMORY;
-        req.operands[0].mem.base = (ZydisRegister)(ZYDIS_REGISTER_RAX + reg);
-        req.operands[0].mem.displacement = 4;
-        req.operands[0].mem.size = 4;
-        req.operands[1].type = ZYDIS_OPERAND_TYPE_IMMEDIATE;
-        req.operands[1].imm.u = 0x9;
-
-        encodedSize = ZYDIS_MAX_INSTRUCTION_LENGTH;
-        ZydisEncoderEncodeInstruction(&req, pattern, &encodedSize);
-        patternSizes[reg] += (int)encodedSize;
-    }
+    // Initialize patterns if not already done
+    initialize_patterns();
 
     // Search for the pattern in the local image copy
     char *found = NULL;
@@ -394,7 +398,7 @@ int main(int argc, char* argv[]) {
     LPVOID textAddr;
     SIZE_T textSize;
 
-    // Main monitoring loop
+    // Main monitoring loop - checks for target pattern at each cycle
     while (1) {
         cycle++;
 
@@ -419,15 +423,12 @@ int main(int argc, char* argv[]) {
             if (buffer) {
                 SIZE_T bytesRead;
                 if (ReadProcessMemory(pi.hProcess, textAddr, buffer, textSize, &bytesRead)) {
-                    // Calculate Shannon entropy
-                    double entropy = calculate_shannon_entropy(buffer, bytesRead);
+                    printf("Cycle %d: .text at 0x%p (size: 0x%X)\n",
+                           cycle, textAddr, (DWORD)textSize);
 
-                    printf("Cycle %d: .text at 0x%p (size: 0x%X) - Shannon Entropy: %.6f\n",
-                           cycle, textAddr, (DWORD)textSize, entropy);
-
-                    // Check if entropy has dropped below threshold (self-extraction complete)
-                    if (entropy < 6.85) {
-                        printf("\nEntropy dropped below 6.85 - self-extraction detected!\n");
+                    // Check for target pattern in the text section
+                    if (search_for_pattern_in_buffer(buffer, bytesRead)) {
+                        printf("\nTarget pattern detected!\n");
                         printf("Beginning key extraction...\n");
 
                         // Extract key from the process using the same logic as DBCacheKeyExtractor

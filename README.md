@@ -1,6 +1,6 @@
 # Cache Key Extractor
 
-An advanced entropy-based cache key extraction tool for World of Warcraft processes. This tool automatically detects when a target process has completed self-extraction and extracts cryptographic keys using assembly pattern matching and controlled exception handling.
+An advanced cache key extraction tool for World of Warcraft processes. This tool automatically detects when target code patterns become available and extracts cryptographic keys using assembly pattern matching and controlled exception handling.
 
 ## Mechanism of Action
 
@@ -14,32 +14,20 @@ CreateProcess(NULL, target_exe, NULL, NULL, FALSE, CREATE_SUSPENDED, NULL, NULL,
 
 This allows us to control execution precisely and monitor the process state during initialization.
 
-### 2. Entropy-Based Self-Extraction Detection
+### 2. Pattern-Based Target Detection
 
-The core innovation is using **Shannon entropy** to detect when the process has completed self-extraction:
-
-#### Shannon Entropy Calculation
-```c
-double entropy = 0.0;
-for (int i = 0; i < 256; i++) {
-    if (freq[i] > 0) {
-        double p = (double)freq[i] / size;
-        entropy -= p * log2(p);
-    }
-}
-```
+The core innovation is using **assembly pattern matching** to detect when the target code becomes available:
 
 #### Monitoring Loop
 - Resumes process execution for exactly **15ms intervals**
 - Suspends the process and reads the .text section
-- Calculates Shannon entropy of the executable code
-- Continues until entropy drops below **6.85** (indicating decompression/unpacking is complete)
-  - **Note**: The 6.85 threshold was determined empirically and may need tuning for future builds
+- Searches for specific assembly patterns that indicate the presence of target functions
+- Continues until the target pattern is found (indicating the code is ready for key extraction)
 
 #### Why This Works
-- **Packed/compressed code** has high entropy (~7.5-8.0) due to compression algorithms
-- **Unpacked executable code** has lower entropy (~6.0-6.8) due to instruction patterns and padding
-- The **6.85 threshold** reliably detects the transition from packed to unpacked state (this value may require adjustment for different builds)
+- **Direct pattern matching** is more reliable than heuristics like entropy
+- **Immediate detection** as soon as the target code appears, regardless of surrounding code state
+- **Build-independent** detection that works across different compilation and packing strategies
 
 ### 3. Memory Architecture Analysis
 
@@ -88,7 +76,7 @@ ReadProcessMemory(hProcess, remoteImageBase, localImageBase, imageSize, &bytesRe
 
 ### 5. Assembly Pattern Recognition
 
-We use the **Zydis disassembler** to generate and search for specific assembly patterns:
+We use the **Zydis disassembler** to generate and search for specific assembly patterns at each monitoring cycle:
 
 #### Target Pattern
 The tool searches for this specific instruction sequence:
@@ -98,14 +86,31 @@ jnz <somewhere>                 ; Jump if not found
 cmp dword ptr [reg+4], 9        ; Check additional field
 ```
 
-#### Dynamic Pattern Generation
+#### Real-Time Pattern Generation
 ```c
 // Generate patterns for all 16 possible registers (RAX, RBX, RCX, etc.)
-for (int reg = 0; reg < 16; reg++) {
-    ZydisEncoderRequest req;
-    req.operands[0].mem.base = (ZydisRegister)(ZYDIS_REGISTER_RAX + reg);
-    req.operands[1].imm.u = 0x48544658; // "XFTH"
-    ZydisEncoderEncodeInstruction(&req, pattern, &encodedSize);
+void initialize_patterns(void) {
+    for (int reg = 0; reg < 16; reg++) {
+        ZydisEncoderRequest req;
+        req.operands[0].mem.base = (ZydisRegister)(ZYDIS_REGISTER_RAX + reg);
+        req.operands[1].imm.u = 0x48544658; // "XFTH"
+        ZydisEncoderEncodeInstruction(&req, pattern, &encodedSize);
+    }
+}
+```
+
+#### Cycle-Based Pattern Search
+```c
+// Search for pattern in each monitoring cycle
+bool search_for_pattern_in_buffer(BYTE* buffer, SIZE_T bufferSize) {
+    for (SIZE_T i = 0; i + 999 < bufferSize; i++) {
+        for (int reg = 0; reg < 16; reg++) {
+            if (maskedCompare(buffer + i, patterns[reg], patternMasks[reg], patternSizes[reg])) {
+                return true; // Pattern found - proceed with key extraction
+            }
+        }
+    }
+    return false;
 }
 ```
 
@@ -167,7 +172,7 @@ CreateThread(NULL, 0, execute_target_function, NULL, 0, NULL);
 
 #### Compared to Static Analysis
 - **No reverse engineering required** - works on any build
-- **Handles obfuscation** - entropy detection bypasses code obfuscation
+- **Handles obfuscation** - pattern detection bypasses code obfuscation
 - **Build-independent** - pattern matching adapts to compiler variations
 
 #### Compared to Memory Dumping
@@ -189,7 +194,7 @@ CreateThread(NULL, 0, execute_target_function, NULL, 0, NULL);
 
 ### Build Process
 ```bash
-x86_64-w64-mingw32-gcc -I . main.c Zydis.c -o cachekey-extract.exe -lpsapi -lshell32 -lntdll -static-libgcc
+x86_64-w64-mingw32-gcc -O2 -I . main.c Zydis.c -o cachekey-extract.exe -lpsapi -lshell32 -lntdll -static-libgcc
 ```
 
 ### Performance Characteristics
@@ -206,20 +211,21 @@ x86_64-w64-mingw32-gcc -I . main.c Zydis.c -o cachekey-extract.exe -lpsapi -lshe
 ```
 
 ### Output
-- Real-time entropy monitoring with cycle-by-cycle reporting
-- Automatic detection and notification of self-extraction completion
+- Real-time monitoring with cycle-by-cycle reporting
+- Automatic detection and notification when target pattern is found
 - Extracted 16-byte key displayed in hexadecimal format
 - Key saved to `dbcachekey.txt` for further use
 
 ### Example Output
 ```
 Process created with PID: 1234
-Cycle 1: .text at 0x140000000 (size: 0x1000) - Shannon Entropy: 7.823431
-Cycle 2: .text at 0x140000000 (size: 0x1000) - Shannon Entropy: 7.823431
+Cycle 1: .text at 0x140000000 (size: 0x1000)
+Cycle 2: .text at 0x140000000 (size: 0x1000)
 ...
-Cycle 45: .text at 0x140000000 (size: 0x45A2000) - Shannon Entropy: 6.847234
+Cycle 23: .text at 0x140000000 (size: 0x45A2000)
+Target pattern found at offset: 0x1A2B3C4
 
-Entropy dropped below 6.85 - self-extraction detected!
+Target pattern detected!
 Beginning key extraction...
 Pattern found at offset: 0x1A2B3C4
 Target function found at: 0x140A1B2C3
