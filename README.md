@@ -34,11 +34,12 @@ for (int i = 0; i < 256; i++) {
 - Suspends the process and reads the .text section
 - Calculates Shannon entropy of the executable code
 - Continues until entropy drops below **6.85** (indicating decompression/unpacking is complete)
+  - **Note**: The 6.85 threshold was determined empirically and may need tuning for future builds
 
 #### Why This Works
 - **Packed/compressed code** has high entropy (~7.5-8.0) due to compression algorithms
 - **Unpacked executable code** has lower entropy (~6.0-6.8) due to instruction patterns and padding
-- The **6.85 threshold** reliably detects the transition from packed to unpacked state
+- The **6.85 threshold** reliably detects the transition from packed to unpacked state (this value may require adjustment for different builds)
 
 ### 3. Memory Architecture Analysis
 
