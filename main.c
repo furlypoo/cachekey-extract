@@ -12,13 +12,13 @@
 
 double calculate_shannon_entropy(BYTE* data, SIZE_T size) {
     if (size == 0) return 0.0;
-    
+
     // Count frequency of each byte value
     DWORD freq[256] = {0};
     for (SIZE_T i = 0; i < size; i++) {
         freq[data[i]]++;
     }
-    
+
     // Calculate Shannon entropy
     double entropy = 0.0;
     for (int i = 0; i < 256; i++) {
@@ -27,7 +27,7 @@ double calculate_shannon_entropy(BYTE* data, SIZE_T size) {
             entropy -= p * log2(p);
         }
     }
-    
+
     return entropy;
 }
 
@@ -42,21 +42,21 @@ static bool maskedCompare(const uint8_t *a, const uint8_t *b, const uint8_t *mas
 LPVOID get_image_base_from_peb(HANDLE hProcess) {
     PROCESS_BASIC_INFORMATION pbi;
     ULONG returnLength;
-    
+
     // Get process basic information to get PEB address
-    NTSTATUS status = NtQueryInformationProcess(hProcess, ProcessBasicInformation, 
+    NTSTATUS status = NtQueryInformationProcess(hProcess, ProcessBasicInformation,
                                                &pbi, sizeof(pbi), &returnLength);
     if (status != 0) {
         return NULL;
     }
-    
+
     // Read PEB
     PEB peb;
     SIZE_T bytesRead;
     if (!ReadProcessMemory(hProcess, pbi.PebBaseAddress, &peb, sizeof(peb), &bytesRead)) {
         return NULL;
     }
-    
+
     return peb.Reserved3[1]; // ImageBaseAddress is at Reserved3[1] in MinGW's PEB structure
 }
 
@@ -66,41 +66,41 @@ BOOL find_text_section(HANDLE hProcess, LPVOID* textAddr, SIZE_T* textSize) {
     if (imageBase == NULL) {
         return FALSE;
     }
-    
+
     // Read DOS header
     IMAGE_DOS_HEADER dosHeader;
     SIZE_T bytesRead;
     if (!ReadProcessMemory(hProcess, imageBase, &dosHeader, sizeof(dosHeader), &bytesRead)) {
         return FALSE;
     }
-    
+
     if (dosHeader.e_magic != IMAGE_DOS_SIGNATURE) {
         return FALSE;
     }
-    
+
     // Read NT headers
     IMAGE_NT_HEADERS ntHeaders;
     LPVOID ntHeaderAddr = (LPVOID)((DWORD_PTR)imageBase + dosHeader.e_lfanew);
     if (!ReadProcessMemory(hProcess, ntHeaderAddr, &ntHeaders, sizeof(ntHeaders), &bytesRead)) {
         return FALSE;
     }
-    
+
     if (ntHeaders.Signature != IMAGE_NT_SIGNATURE) {
         return FALSE;
     }
-    
+
     // Find .text section
     WORD numSections = ntHeaders.FileHeader.NumberOfSections;
     LPVOID sectionHeaderAddr = (LPVOID)((DWORD_PTR)ntHeaderAddr + sizeof(IMAGE_NT_HEADERS));
-    
+
     for (WORD i = 0; i < numSections; i++) {
         IMAGE_SECTION_HEADER sectionHeader;
         LPVOID currentSectionAddr = (LPVOID)((DWORD_PTR)sectionHeaderAddr + (i * sizeof(IMAGE_SECTION_HEADER)));
-        
+
         if (!ReadProcessMemory(hProcess, currentSectionAddr, &sectionHeader, sizeof(sectionHeader), &bytesRead)) {
             continue;
         }
-        
+
         // Check if this is the .text section
         if (strcmp((char*)sectionHeader.Name, ".text") == 0) {
             *textAddr = (LPVOID)((DWORD_PTR)imageBase + sectionHeader.VirtualAddress);
@@ -108,7 +108,7 @@ BOOL find_text_section(HANDLE hProcess, LPVOID* textAddr, SIZE_T* textSize) {
             return TRUE;
         }
     }
-    
+
     return FALSE;
 }
 
@@ -173,7 +173,7 @@ bool copy_pe_image_to_local_memory(HANDLE hProcess, LPVOID* localImageBase, SIZE
     }
 
     *imageSize = ntHeaders.OptionalHeader.SizeOfImage;
-    
+
     // Allocate executable memory for the entire image
     *localImageBase = VirtualAlloc(NULL, *imageSize, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
     if (!*localImageBase) {
@@ -188,9 +188,9 @@ bool copy_pe_image_to_local_memory(HANDLE hProcess, LPVOID* localImageBase, SIZE
         return false;
     }
 
-    printf("Copied PE image: 0x%p -> 0x%p (size: 0x%X)\n", 
+    printf("Copied PE image: 0x%p -> 0x%p (size: 0x%X)\n",
            remoteImageBase, *localImageBase, (DWORD)*imageSize);
-    
+
     return true;
 }
 
@@ -208,12 +208,12 @@ bool extract_cache_key(HANDLE hProcess, BYTE* textData, SIZE_T textSize) {
     memset(patternMasks, 0xff, sizeof(patternMasks));
     int patternSizes[16];
     memset(patternSizes, 0, sizeof(patternSizes));
-    
+
     for (int reg = 0; reg < 16; reg++) {
         uint8_t *pattern = patterns[reg];
         uint8_t *patternMask = patternMasks[reg];
         ZydisEncoderRequest req;
-        
+
         // Pattern 1: cmp dword ptr [reg], 48544658h  ; "XFTH"
         memset(&req, 0, sizeof(ZydisEncoderRequest));
         req.mnemonic = ZYDIS_MNEMONIC_CMP;
@@ -280,7 +280,7 @@ bool extract_cache_key(HANDLE hProcess, BYTE* textData, SIZE_T textSize) {
         }
         if (found) break;
     }
-    
+
     if (!found) {
         printf("Pattern not found in image\n");
         VirtualFree(localImageBase, 0, MEM_RELEASE);
@@ -291,7 +291,7 @@ bool extract_cache_key(HANDLE hProcess, BYTE* textData, SIZE_T textSize) {
     void *startFn = NULL;
     ZydisDisassembledInstruction inst;
     LPVOID currentAddr = found;
-    
+
     while (ZYAN_SUCCESS(ZydisDisassembleIntel(ZYDIS_MACHINE_MODE_LONG_64, (ZyanU64)currentAddr, currentAddr, 999, &inst))) {
         if (inst.info.mnemonic == ZYDIS_MNEMONIC_CALL) {
             ZydisCalcAbsoluteAddress(&inst.info, &inst.operands[0], (ZyanU64)currentAddr, (ZyanU64 *)&startFn);
@@ -310,29 +310,29 @@ bool extract_cache_key(HANDLE hProcess, BYTE* textData, SIZE_T textSize) {
     // Set up exception handling and execute the function
     keyReadyEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
     key_extracted = false;
-    
+
     PVOID handler = AddVectoredExceptionHandler(1, key_extraction_handler);
-    
+
     // Set the global target function pointer and create thread to execute it
     target_function = (void(*)(void*))startFn;
     HANDLE thread = CreateThread(NULL, 0, execute_target_function, NULL, 0, NULL);
 
     // Wait for key extraction
     DWORD waitResult = WaitForSingleObject(keyReadyEvent, 5000); // 5 second timeout
-    
+
     RemoveVectoredExceptionHandler(handler);
     CloseHandle(keyReadyEvent);
-    
+
     // Clean up local image copy
     VirtualFree(localImageBase, 0, MEM_RELEASE);
-    
+
     if (waitResult == WAIT_OBJECT_0 && key_extracted) {
         printf("Extracted key: ");
         for (int i = 0; i < 16; i++) {
             printf("%02x", extracted_key[i]);
         }
         printf("\n");
-        
+
         // Write key to file
         FILE* keyFile = fopen("dbcachekey.txt", "w");
         if (keyFile) {
@@ -345,7 +345,7 @@ bool extract_cache_key(HANDLE hProcess, BYTE* textData, SIZE_T textSize) {
         } else {
             printf("Failed to write key to file\n");
         }
-        
+
         return true;
     } else {
         printf("Key extraction timed out or failed\n");
@@ -356,62 +356,62 @@ bool extract_cache_key(HANDLE hProcess, BYTE* textData, SIZE_T textSize) {
 int main(int argc, char* argv[]) {
     LPWSTR* argv_w;
     int argc_w;
-    
+
     argv_w = CommandLineToArgvW(GetCommandLineW(), &argc_w);
     if (argv_w == NULL) {
         printf("Failed to parse command line\n");
         return 1;
     }
-    
+
     printf("argc: %d\n", argc_w);
-    
+
     if (argc_w < 2) {
         printf("Usage: program.exe <executable_path>\n");
         LocalFree(argv_w);
         return 1;
     }
-    
+
     // Convert wide string to narrow string
     char target_exe[MAX_PATH];
     WideCharToMultiByte(CP_ACP, 0, argv_w[1], -1, target_exe, MAX_PATH, NULL, NULL);
-    
+
     STARTUPINFO si = {0};
     PROCESS_INFORMATION pi = {0};
     si.cb = sizeof(si);
-    
+
     // Create process in suspended state
-    if (!CreateProcess(NULL, target_exe, NULL, NULL, FALSE, 
+    if (!CreateProcess(NULL, target_exe, NULL, NULL, FALSE,
                       CREATE_SUSPENDED, NULL, NULL, &si, &pi)) {
         printf("CreateProcess failed (%d)\n", GetLastError());
         LocalFree(argv_w);
         return 1;
     }
-    
+
     printf("Process created with PID: %d\n", pi.dwProcessId);
     printf("Press any key to stop monitoring...\n\n");
-    
+
     int cycle = 0;
     LPVOID textAddr;
     SIZE_T textSize;
-    
+
     // Main monitoring loop
     while (1) {
         cycle++;
-        
+
         // Check if process is still alive
         DWORD exitCode;
         if (GetExitCodeProcess(pi.hProcess, &exitCode) && exitCode != STILL_ACTIVE) {
             printf("Process exited with code %d after %d cycles\n", exitCode, cycle - 1);
             break;
         }
-        
+
         // Resume for 15ms
         ResumeThread(pi.hThread);
         Sleep(15);
-        
+
         // Suspend again
         SuspendThread(pi.hThread);
-        
+
         // Find .text section
         if (find_text_section(pi.hProcess, &textAddr, &textSize)) {
             // Read the .text section
@@ -421,22 +421,22 @@ int main(int argc, char* argv[]) {
                 if (ReadProcessMemory(pi.hProcess, textAddr, buffer, textSize, &bytesRead)) {
                     // Calculate Shannon entropy
                     double entropy = calculate_shannon_entropy(buffer, bytesRead);
-                    
-                    printf("Cycle %d: .text at 0x%p (size: 0x%X) - Shannon Entropy: %.6f\n", 
+
+                    printf("Cycle %d: .text at 0x%p (size: 0x%X) - Shannon Entropy: %.6f\n",
                            cycle, textAddr, (DWORD)textSize, entropy);
-                    
+
                     // Check if entropy has dropped below threshold (self-extraction complete)
                     if (entropy < 6.85) {
                         printf("\nEntropy dropped below 6.85 - self-extraction detected!\n");
                         printf("Beginning key extraction...\n");
-                        
+
                         // Extract key from the process using the same logic as DBCacheKeyExtractor
                         if (extract_cache_key(pi.hProcess, buffer, bytesRead)) {
                             printf("Key extraction successful!\n");
                         } else {
                             printf("Key extraction failed.\n");
                         }
-                        
+
                         break;
                     }
                 } else {
@@ -449,20 +449,20 @@ int main(int argc, char* argv[]) {
         } else {
             printf("Cycle %d: Could not find .text section\n", cycle);
         }
-        
+
         // Check if user wants to stop
         if (_kbhit()) {
             break;
         }
     }
-    
+
     printf("\nStopping monitoring...\n");
-    
+
     // Clean up
     TerminateProcess(pi.hProcess, 0);
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
     LocalFree(argv_w);
-    
+
     return 0;
 }

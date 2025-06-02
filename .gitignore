@@ -4,3 +4,4 @@ WTF
 *.so
 *.txt
 *.bin
+.mkrelease.sh
