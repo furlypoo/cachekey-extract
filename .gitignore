@@ -2,3 +2,5 @@ Logs
 WTF
 *.exe
 *.so
+*.txt
+*.bin
