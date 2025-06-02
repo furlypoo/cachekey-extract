@@ -1,0 +1,42 @@
+name: Build Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Install Wine64 Tools
+      run: |
+        sudo apt update
+        sudo apt install -y wine64-tools
+        
+    - name: Build main.exe
+      run: |
+        # Use winegcc-stable from wine64-tools
+        winegcc-stable -mno-cygwin -Wb,--subsystem=console -I . main.c Zydis.c -o main.exe -lpsapi -lshell32
+        
+    - name: Upload release artifact
+      if: github.event_name == 'release'
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ github.event.release.upload_url }}
+        asset_path: ./main.exe
+        asset_name: wowt-extract.exe
+        asset_content_type: application/octet-stream
+        
+    - name: Upload build artifact
+      if: github.event_name == 'workflow_dispatch'
+      uses: actions/upload-artifact@v4
+      with:
+        name: wowt-extract
+        path: main.exe

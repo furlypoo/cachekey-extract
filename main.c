@@ -7,6 +7,7 @@
 #include <conio.h>
 #include <winnt.h>
 #include <winternl.h>
+#include <stdbool.h>
 #include "Zydis.h"
 
 double calculate_shannon_entropy(BYTE* data, SIZE_T size) {
