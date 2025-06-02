@@ -57,7 +57,7 @@ LPVOID get_image_base_from_peb(HANDLE hProcess) {
         return NULL;
     }
     
-    return peb.ImageBaseAddress;
+    return peb.Reserved3[1]; // ImageBaseAddress is at Reserved3[1] in MinGW's PEB structure
 }
 
 BOOL find_text_section(HANDLE hProcess, LPVOID* textAddr, SIZE_T* textSize) {

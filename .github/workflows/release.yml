@@ -13,15 +13,15 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v4
       
-    - name: Install Wine64 Tools
+    - name: Install MinGW Cross-Compiler
       run: |
         sudo apt update
-        sudo apt install -y wine64-tools
+        sudo apt install -y mingw-w64
         
     - name: Build main.exe
       run: |
-        # Use winegcc-stable from wine64-tools
-        winegcc-stable -mno-cygwin -Wb,--subsystem=console -I . main.c Zydis.c -o main.exe -lpsapi -lshell32
+        # Use MinGW for native Windows executable
+        x86_64-w64-mingw32-gcc -I . main.c Zydis.c -o main.exe -lpsapi -lshell32 -lntdll -static-libgcc
         
     - name: Upload release artifact
       if: github.event_name == 'release'
